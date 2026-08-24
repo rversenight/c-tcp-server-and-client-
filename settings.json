@@ -1,0 +1,15 @@
+{
+  "ouch_pay": [
+    {
+      "enabled": true,
+      "desc": "OUCH pay test",
+      "client_account": "",
+      "account_number": "01234567",
+      "username": "abcdef",
+      "pass": "abcd",
+      "ip": "10.194.203.37",
+      "port": 25760,
+      "client_category": 1
+    }
+  ]
+}v
