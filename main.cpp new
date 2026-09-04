@@ -1,0 +1,18 @@
+#include <iostream>
+#include <cstdint>
+#include "ouch_errors.hpp"
+
+int main() {
+    std::cout << "=========================================" << std::endl;
+    std::cout << " BISTECH OUCH Simulation & Error Lookup" << std::endl;
+    std::cout << "=========================================\n" << std::endl;
+
+    // Test edilmek üzere seçilen örnek hata kodları
+    int32_t sample_codes[] = {-800014, -800002, -800016, -2000212, -999999};
+
+    for (int32_t code : sample_codes) {
+        std::cout << "Hata Kodu " << code << " : " << get_ouch_error_message(code) << std::endl;
+    }
+
+    return 0;
+}
