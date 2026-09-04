@@ -1,0 +1,64 @@
+# ==============================================================================
+# BISTECH OUCH Error Extractor
+#
+# Bu script, Borsa İstanbul resmi BISTECH Reference Manual PDF dosyasını indirir,
+# içindeki tüm (-110xxx, -8000xx, -2000xxx serisi) 2.352 adet hata/alarm kodunu
+# ayrıştırır ve C++ projesinde derleme yükü oluşturmayacak şekilde
+# 'ouch_errors.hpp' ve 'ouch_errors.cpp' dosyalarını otomatik üretir.
+# ==============================================================================
+
+import urllib.request
+import re
+from pypdf import PdfReader
+
+# 1. Borsa İstanbul Resmi Doküman Linki
+PDF_URL = "https://www.borsaistanbul.com/files/system-error-messages-reference-manual.pdf"
+PDF_FILE = "bist_errors.pdf"
+
+print("[1/3] BISTECH PDF indiriliyor...")
+req = urllib.request.Request(PDF_URL, headers={'User-Agent': 'Mozilla/5.0'})
+with urllib.request.urlopen(req) as response, open(PDF_FILE, 'wb') as out_file:
+    out_file.write(response.read())
+
+print("[2/3] PDF içerisindeki hata kodları ayrıştırılıyor...")
+reader = PdfReader(PDF_FILE)
+errors_dict = {}
+
+for page in reader.pages:
+    text = page.extract_text()
+    if not text:
+        continue
+    
+    # Regex ile Number: -XXXXXX ve Message Text: XXXXXX alanlarını çekme
+    numbers = re.findall(r"Number:\s*(-?\d+)", text)
+    messages = re.findall(r"Message Text:\s*(.*?)(?=\n[A-Z][a-z]+:|\nNumber:|\nAlarm Code:|\Z)", text, re.DOTALL)
+    
+    for num, msg in zip(numbers, messages):
+        clean_msg = msg.strip().replace('"', '\\"').replace('\n', ' ')
+        errors_dict[int(num)] = clean_msg
+
+print(f"[3/3] Toplam {len(errors_dict)} adet hata kodu bulundu. C++ modülleri üretiliyor...")
+
+# 'ouch_errors.hpp' Üretimi
+with open("ouch_errors.hpp", "w", encoding="utf-8") as f:
+    f.write("#ifndef OUCH_ERRORS_HPP\n#define OUCH_ERRORS_HPP\n\n")
+    f.write("#include <string>\n#include <cstdint>\n\n")
+    f.write("std::string get_ouch_error_message(int32_t error_code);\n\n")
+    f.write("#endif\n")
+
+# 'ouch_errors.cpp' Üretimi
+with open("ouch_errors.cpp", "w", encoding="utf-8") as f:
+    f.write("#include \"ouch_errors.hpp\"\n#include <unordered_map>\n\n")
+    f.write("static const std::unordered_map<int32_t, std::string> OuchErrors {\n")
+    
+    entries = [f'    {{{num}, "{msg}"}}' for num, msg in sorted(errors_dict.items())]
+    f.write(",\n".join(entries))
+    
+    f.write("\n};\n\n")
+    f.write("std::string get_ouch_error_message(int32_t error_code) {\n")
+    f.write("    auto it = OuchErrors.find(error_code);\n")
+    f.write("    if (it != OuchErrors.end()) return it->second;\n")
+    f.write("    return \"-\";\n")
+    f.write("}\n")
+
+print("İşlem tamamlandı! 'ouch_errors.hpp' ve 'ouch_errors.cpp' oluşturuldu.")
