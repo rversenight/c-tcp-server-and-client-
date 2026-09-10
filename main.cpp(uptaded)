@@ -1,0 +1,155 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <cstring>
+#include <algorithm>
+#include <cstdint>
+
+// --- CONFIG STRUCT ---
+struct OuchConfig {
+    bool enabled = false;
+    std::string desc;
+    std::string client_account;
+    std::string account_number;
+    std::string username;
+    std::string pass;
+    std::string ip;
+    int port = 0;
+    int client_category = 1;
+};
+
+// --- BISTECH 114 BYTE ENTER ORDER PACKET ---
+#pragma pack(push, 1)
+struct BistechOuchEnterOrder {
+    char     messageType;       // 1 Byte
+    char     orderToken[14];    // 14 Byte
+    uint32_t orderBookID;       // 4 Byte
+    char     side;              // 1 Byte
+    uint64_t quantity;          // 8 Byte
+    uint32_t price;             // 4 Byte
+    uint8_t  timeInForce;       // 1 Byte
+    uint8_t  openClose;         // 1 Byte
+    char     clientAccount[16]; // 16 Byte
+    char     customerInfo[15];  // 15 Byte
+    char     exchangeInfo[32];  // 32 Byte
+    uint64_t displayQuantity;   // 8 Byte
+    uint8_t  clientCategory;    // 1 Byte
+    uint8_t  offHours;          // 1 Byte
+    uint8_t  smpLevel;          // 1 Byte
+    uint8_t  smpMethod;         // 1 Byte
+    char     smpID[3];          // 3 Byte
+    char     reserved[2];       // 2 Byte
+};
+#pragma pack(pop)
+
+// --- ERROR TRANSLATOR ---
+const std::unordered_map<int, std::string> BISTECH_ERROR_MAP = {
+    {-800014, "The order can not be cancelled"},
+    {-800001, "Order not found"},
+    {-800002, "Invalid order book ID"},
+    {-800003, "Invalid price or tick size"},
+    {-800006, "Price exceeds allowed price limits (Circuit Breaker)"}
+};
+
+std::string get_ouch_error_message(int error_code) {
+    auto it = BISTECH_ERROR_MAP.find(error_code);
+    return (it != BISTECH_ERROR_MAP.end()) ? it->second : "Unknown BISTECH Error Code (" + std::to_string(error_code) + ")";
+}
+
+// JSON Değerlerini Temizleme Yardımcısı
+std::string extract_json_value(const std::string& line) {
+    size_t colon_pos = line.find(':');
+    if (colon_pos == std::string::npos) return "";
+    std::string val = line.substr(colon_pos + 1);
+    
+    val.erase(0, val.find_first_not_of(" \t\r\n\""));
+    size_t last = val.find_last_not_of(" \t\r\n\",");
+    if (last != std::string::npos) {
+        val = val.substr(0, last + 1);
+    }
+    return val;
+}
+
+// --- DİNAMİK JSON PARSER ---
+bool load_config(const std::string& filename, OuchConfig& config) {
+    std::ifstream file(filename);
+    if (!file.is_open()) return false;
+
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.find("\"enabled\"") != std::string::npos) {
+            config.enabled = (line.find("true") != std::string::npos);
+        } else if (line.find("\"desc\"") != std::string::npos) {
+            config.desc = extract_json_value(line);
+        } else if (line.find("\"client_account\"") != std::string::npos) {
+            config.client_account = extract_json_value(line);
+        } else if (line.find("\"account_number\"") != std::string::npos) {
+            config.account_number = extract_json_value(line);
+        } else if (line.find("\"username\"") != std::string::npos) {
+            config.username = extract_json_value(line);
+        } else if (line.find("\"pass\"") != std::string::npos) {
+            config.pass = extract_json_value(line);
+        } else if (line.find("\"ip\"") != std::string::npos) {
+            config.ip = extract_json_value(line);
+        } else if (line.find("\"port\"") != std::string::npos) {
+            std::string p_str = extract_json_value(line);
+            if (!p_str.empty()) config.port = std::stoi(p_str);
+        } else if (line.find("\"client_category\"") != std::string::npos) {
+            std::string c_str = extract_json_value(line);
+            if (!c_str.empty()) config.client_category = std::stoi(c_str);
+        }
+    }
+    file.close();
+    return true;
+}
+
+int main() {
+    OuchConfig config;
+    if (!load_config("setting.json", config)) {
+        std::cerr << "[HATA] setting.json okunamadi!" << std::endl;
+        return -1;
+    }
+
+    std::cout << "=================================================" << std::endl;
+    std::cout << " BISTECH OUCH Order Entry Client Simulation" << std::endl;
+    std::cout << " Dynamic Config Loaded from setting.json:" << std::endl;
+    std::cout << " -> Target IP/Port : " << config.ip << ":" << config.port << std::endl;
+    std::cout << " -> User/Account   : " << config.username << " / " << config.account_number << std::endl;
+    std::cout << " -> Category       : " << config.client_category << std::endl;
+    std::cout << "=================================================\n" << std::endl;
+
+    std::string hisse;
+    double fiyat;
+    uint64_t lot;
+
+    std::cout << "Hisse Adi Giriniz (Orn: THYAO): ";
+    std::cin >> hisse;
+    std::cout << "Fiyat Giriniz (Orn: 312.50): ";
+    std::cin >> fiyat;
+    std::cout << "Lot/Miktar Giriniz: ";
+    std::cin >> lot;
+
+    BistechOuchEnterOrder emir;
+    std::memset(&emir, 0, sizeof(emir));
+
+    emir.messageType = 'O';
+    std::string token = "ORD" + hisse + "001";
+    std::memcpy(emir.orderToken, token.c_str(), std::min((size_t)14, token.length()));
+    
+    emir.orderBookID = (hisse == "THYAO") ? 1045 : 2088;
+    emir.side = 'B';
+    emir.quantity = lot;
+    emir.price = static_cast<uint32_t>(fiyat * 100);
+    emir.clientCategory = static_cast<uint8_t>(config.client_category);
+    std::memcpy(emir.clientAccount, config.account_number.c_str(), std::min((size_t)16, config.account_number.length()));
+
+    std::cout << "\n[PAKET HAZIRLANDI]" << std::endl;
+    std::cout << " -> Byte Boyutu  : " << sizeof(emir) << " Byte" << std::endl;
+    std::cout << " -> Order Token  : " << token << std::endl;
+    std::cout << " -> OrderBook ID : " << emir.orderBookID << std::endl;
+    std::cout << " -> Islem        : " << hisse << " | Lot: " << emir.quantity << " | Fiyat: " << fiyat << std::endl;
+    std::cout << " -> Musteri Cat  : " << (int)emir.clientCategory << std::endl;
+
+    return 0;
+}
