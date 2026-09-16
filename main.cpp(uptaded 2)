@@ -1,0 +1,161 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <cstring>
+#include <algorithm>
+#include <cstdint>
+
+// Linux Socket Kütüphaneleri
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/select.h>
+
+// --- CONFIG STRUCT ---
+struct OuchConfig {
+    bool enabled = false;
+    std::string desc;
+    std::string client_account;
+    std::string account_number;
+    std::string username;
+    std::string pass;
+    std::string ip;
+    int port = 0;
+    int client_category = 1;
+};
+
+// --- BISTECH 114 BYTE ENTER ORDER PACKET ---
+#pragma pack(push, 1)
+struct BistechOuchEnterOrder {
+    char     messageType;       // 1 Byte ('O')
+    char     orderToken[14];    // 14 Byte
+    uint32_t orderBookID;       // 4 Byte
+    char     side;              // 1 Byte
+    uint64_t quantity;          // 8 Byte
+    uint32_t price;             // 4 Byte
+    uint8_t  timeInForce;       // 1 Byte
+    uint8_t  openClose;         // 1 Byte
+    char     clientAccount[16]; // 16 Byte
+    char     customerInfo[15];  // 15 Byte
+    char     exchangeInfo[32];  // 32 Byte
+    uint64_t displayQuantity;   // 8 Byte
+    uint8_t  clientCategory;    // 1 Byte
+    uint8_t  offHours;          // 1 Byte
+    uint8_t  smpLevel;          // 1 Byte
+    uint8_t  smpMethod;         // 1 Byte
+    char     smpID[3];          // 3 Byte
+    char     reserved[2];       // 2 Byte
+};
+#pragma pack(pop)
+
+std::string extract_json_value(const std::string& line) {
+    size_t colon_pos = line.find(':');
+    if (colon_pos == std::string::npos) return "";
+    std::string val = line.substr(colon_pos + 1);
+    
+    val.erase(0, val.find_first_not_of(" \t\r\n\""));
+    size_t last = val.find_last_not_of(" \t\r\n\",");
+    if (last != std::string::npos) {
+        val = val.substr(0, last + 1);
+    }
+    return val;
+}
+
+bool load_config(const std::string& filename, OuchConfig& config) {
+    std::ifstream file(filename);
+    if (!file.is_open()) return false;
+
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.find("\"enabled\"") != std::string::npos) {
+            config.enabled = (line.find("true") != std::string::npos);
+        } else if (line.find("\"desc\"") != std::string::npos) {
+            config.desc = extract_json_value(line);
+        } else if (line.find("\"client_account\"") != std::string::npos) {
+            config.client_account = extract_json_value(line);
+        } else if (line.find("\"account_number\"") != std::string::npos) {
+            config.account_number = extract_json_value(line);
+        } else if (line.find("\"username\"") != std::string::npos) {
+            config.username = extract_json_value(line);
+        } else if (line.find("\"pass\"") != std::string::npos) {
+            config.pass = extract_json_value(line);
+        } else if (line.find("\"ip\"") != std::string::npos) {
+            config.ip = extract_json_value(line);
+        } else if (line.find("\"port\"") != std::string::npos) {
+            std::string p_str = extract_json_value(line);
+            if (!p_str.empty()) config.port = std::stoi(p_str);
+        } else if (line.find("\"client_category\"") != std::string::npos) {
+            std::string c_str = extract_json_value(line);
+            if (!c_str.empty()) config.client_category = std::stoi(c_str);
+        }
+    }
+    file.close();
+    return true;
+}
+
+int main() {
+    OuchConfig config;
+    if (!load_config("setting.json", config)) {
+        std::cerr << "[HATA] setting.json okunamadi!" << std::endl;
+        return -1;
+    }
+
+    std::cout << "=================================================" << std::endl;
+    std::cout << " BISTECH OUCH TCP/IP Client" << std::endl;
+    std::cout << " -> Hedef IP/Port : " << config.ip << ":" << config.port << std::endl;
+    std::cout << "=================================================\n" << std::endl;
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        std::cerr << "[HATA] Socket olusturulamadi!" << std::endl;
+        return -1;
+    }
+
+    // Socket'i Non-Blocking Yap (Zamanaşımı Kontrolü İçin)
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+
+    sockaddr_in server_addr;
+    std::memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(config.port);
+
+    if (inet_pton(AF_INET, config.ip.c_str(), &server_addr.sin_addr) <= 0) {
+        std::cerr << "[HATA] Gecersiz IP Adresi: " << config.ip << std::endl;
+        close(sock);
+        return -1;
+    }
+
+    std::cout << "[AG] " << config.ip << ":" << config.port << " adresine baglaniliyor (3 sn timeout)..." << std::endl;
+    
+    int res = connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (res < 0 && errno == EINPROGRESS) {
+        fd_set myset;
+        struct timeval tv;
+        tv.tv_sec = 3; // 3 saniye zaman aşımı
+        tv.tv_usec = 0;
+        FD_ZERO(&myset);
+        FD_SET(sock, &myset);
+        
+        if (select(sock + 1, NULL, &myset, NULL, &tv) > 0) {
+            int lon;
+            socklen_t len = sizeof(int);
+            getsockopt(sock, SOL_SOCKET, SO_ERROR, (void*)(&lon), &len);
+            if (lon) {
+                std::cerr << "[BAGLANTI HATASI] Sunucuya baglanilamadi! Code: " << lon << std::endl;
+                close(sock);
+                return -1;
+            }
+        } else {
+            std::cerr << "[TIMEOUT HATASI] 3 saniye icinde " << config.ip << ":" << config.port << " baglantisi zaman asamina ugradi!" << std::endl;
+            close(sock);
+            return -1;
+        }
+    }
+
+    std::cout << "[BAŞARILI] BISTECH Sunucusuna TCP Bağlantısı Kuruldu!\n" << std::endl;
+    close(sock);
+    return 0;
+}
