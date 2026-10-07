@@ -1,0 +1,35 @@
+#include <iostream>
+#include "Config.h"
+#include "OuchClient.h"
+
+int main() {
+    OuchConfig config;
+    if (!ConfigLoader::load("setting.json", config)) {
+        std::cerr << "[HATA] setting.json okunamadi!" << std::endl;
+        return -1;
+    }
+
+    std::cout << "=================================================" << std::endl;
+    std::cout << " BISTECH OUCH Client (Full Order Life-Cycle)" << std::endl;
+    std::cout << "=================================================\n" << std::endl;
+
+    OuchClient client(config);
+    
+    if (client.connect_server()) {
+        client.send_logon();
+        
+        // 1. Yeni Emir Gir
+        client.send_order("THYAO", 312.50, 10);
+
+        // 2. Emri Güncelle (Örn: Fiyatı 313.00, Lotu 15 yap)
+        client.replace_order("ORDTHYAO001", "ORDTHYAO002", 313.00, 15);
+
+        // 3. Emri İptal Et
+        client.cancel_order("ORDTHYAO002", 0);
+
+        // 4. Sunucu Yanıtlarını Oku
+        client.process_incoming_data();
+    }
+
+    return 0;
+}
