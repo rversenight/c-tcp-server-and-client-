@@ -1,0 +1,226 @@
+#ifndef OUCH_CLIENT_H
+#define OUCH_CLIENT_H
+
+#include <iostream>
+#include <cstring>
+#include <algorithm>
+#include <cstdint>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/select.h>
+
+#include "Config.h"
+
+// --- BISTECH LOGON PACKET ---
+#pragma pack(push, 1)
+struct BistechOuchLogon {
+    char messageType;       // 'L'
+    char username[6];
+    char password[10];
+    char activeSession[10];
+};
+
+// --- BISTECH 114 BYTE ENTER ORDER PACKET ---
+struct BistechOuchEnterOrder {
+    char     messageType;       // 'O'
+    char     orderToken[14];
+    uint32_t orderBookID;
+    char     side;
+    uint64_t quantity;
+    uint32_t price;
+    uint8_t  timeInForce;
+    uint8_t  openClose;
+    char     clientAccount[16];
+    char     customerInfo[15];
+    char     exchangeInfo[32];
+    uint64_t displayQuantity;
+    uint8_t  clientCategory;
+    uint8_t  offHours;
+    uint8_t  smpLevel;
+    uint8_t  smpMethod;
+    char     smpID[3];
+    char     reserved[2];
+};
+
+// --- BISTECH CANCEL ORDER PACKET (C-Packet) ---
+struct BistechOuchCancelOrder {
+    char     messageType;       // 'C'
+    char     orderToken[14];
+    uint64_t quantity;
+};
+
+// --- BISTECH REPLACE ORDER PACKET (U-Packet) ---
+struct BistechOuchReplaceOrder {
+    char     messageType;       // 'U'
+    char     existingToken[14];
+    char     replacementToken[14];
+    uint64_t quantity;
+    uint32_t price;
+    uint8_t  timeInForce;
+    uint64_t displayQuantity;
+};
+#pragma pack(pop)
+
+class OuchClient {
+private:
+    int sock = -1;
+    OuchConfig config;
+
+public:
+    OuchClient(const OuchConfig& cfg) : config(cfg) {}
+    ~OuchClient() { disconnect(); }
+
+    bool connect_server() {
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) return false;
+
+        int flags = fcntl(sock, F_GETFL, 0);
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+
+        sockaddr_in server_addr{};
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(config.port);
+
+        if (inet_pton(AF_INET, config.ip.c_str(), &server_addr.sin_addr) <= 0) {
+            close(sock);
+            sock = -1;
+            return false;
+        }
+
+        std::cout << "[AG] Baglaniliyor: " << config.ip << ":" << config.port << std::endl;
+        
+        int res = connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr));
+        if (res < 0 && errno == EINPROGRESS) {
+            fd_set myset;
+            struct timeval tv{3, 0};
+            FD_ZERO(&myset);
+            FD_SET(sock, &myset);
+            
+            if (select(sock + 1, NULL, &myset, NULL, &tv) <= 0) {
+                std::cerr << "[HATA] Baglanti zaman asimina ugradi!" << std::endl;
+                close(sock);
+                sock = -1;
+                return false;
+            }
+        }
+
+        std::cout << "[OK] Baglanti kuruldu." << std::endl;
+        return true;
+    }
+
+    bool send_logon() {
+        if (sock < 0) return false;
+
+        BistechOuchLogon logon{};
+        logon.messageType = 'L';
+        std::memcpy(logon.username, config.username.c_str(), std::min((size_t)6, config.username.length()));
+        std::memcpy(logon.password, config.pass.c_str(), std::min((size_t)10, config.pass.length()));
+
+        ssize_t sent = send(sock, &logon, sizeof(logon), 0);
+        if (sent > 0) {
+            std::cout << "[LOGON] Giri paketi gonderildi." << std::endl;
+            return true;
+        }
+        return false;
+    }
+
+    bool send_order(const std::string& hisse, double fiyat, uint64_t lot) {
+        if (sock < 0) return false;
+
+        BistechOuchEnterOrder emir{};
+        emir.messageType = 'O';
+        std::string token = "ORD" + hisse + "001";
+        std::memcpy(emir.orderToken, token.c_str(), std::min((size_t)14, token.length()));
+        emir.orderBookID = (hisse == "THYAO") ? 1045 : 2088;
+        emir.side = 'B';
+        emir.quantity = lot;
+        emir.price = static_cast<uint32_t>(fiyat * 100);
+        emir.clientCategory = static_cast<uint8_t>(config.client_category);
+        std::memcpy(emir.clientAccount, config.account_number.c_str(), std::min((size_t)16, config.account_number.length()));
+
+        ssize_t sent = send(sock, &emir, sizeof(emir), 0);
+        if (sent > 0) {
+            std::cout << "[EMIR] Yeni emir gonderildi -> " << hisse << " | " << lot << " Lot" << std::endl;
+            return true;
+        }
+        return false;
+    }
+
+    bool cancel_order(const std::string& orderToken, uint64_t lot = 0) {
+        if (sock < 0) return false;
+
+        BistechOuchCancelOrder cancelReq{};
+        cancelReq.messageType = 'C';
+        std::memcpy(cancelReq.orderToken, orderToken.c_str(), std::min((size_t)14, orderToken.length()));
+        cancelReq.quantity = lot;
+
+        ssize_t sent = send(sock, &cancelReq, sizeof(cancelReq), 0);
+        if (sent > 0) {
+            std::cout << "[IPTAL] Emir iptal istigi gonderildi." << std::endl;
+            return true;
+        }
+        return false;
+    }
+
+    bool replace_order(const std::string& oldToken, const std::string& newToken, double yeniFiyat, uint64_t yeniLot) {
+        if (sock < 0) return false;
+
+        BistechOuchReplaceOrder replaceReq{};
+        replaceReq.messageType = 'U';
+        std::memcpy(replaceReq.existingToken, oldToken.c_str(), std::min((size_t)14, oldToken.length()));
+        std::memcpy(replaceReq.replacementToken, newToken.c_str(), std::min((size_t)14, newToken.length()));
+        replaceReq.quantity = yeniLot;
+        replaceReq.price = static_cast<uint32_t>(yeniFiyat * 100);
+
+        ssize_t sent = send(sock, &replaceReq, sizeof(replaceReq), 0);
+        if (sent > 0) {
+            std::cout << "[GUNCELLEME] Emir degistirme istegi gonderildi." << std::endl;
+            return true;
+        }
+        return false;
+    }
+
+    void process_incoming_data() {
+        if (sock < 0) return;
+
+        char buffer[1024];
+        ssize_t bytes_received = recv(sock, buffer, sizeof(buffer), 0);
+
+        if (bytes_received > 0) {
+            char msgType = buffer[0];
+            std::cout << "[RECV] Veri geldi. Tip: " << msgType << std::endl;
+
+            switch (msgType) {
+                case 'A':
+                    std::cout << " -> Emir onaylandi." << std::endl;
+                    break;
+                case 'J':
+                    std::cout << " -> Emir reddedildi!" << std::endl;
+                    break;
+                case 'K':
+                    std::cout << " -> Giri basarili." << std::endl;
+                    break;
+                default:
+                    break;
+            }
+        } else if (bytes_received == 0) {
+            std::cout << "[AG] Baglanti kapandi." << std::endl;
+        } else {
+            if (errno != EWOULDBLOCK && errno != EAGAIN) {
+                std::cerr << "[HATA] Okuma hatasi!" << std::endl;
+            }
+        }
+    }
+
+    void disconnect() {
+        if (sock >= 0) {
+            close(sock);
+            sock = -1;
+            std::cout << "[AG] Baglanti kapatildi." << std::endl;
+        }
+    }
+};
+
+#endif
