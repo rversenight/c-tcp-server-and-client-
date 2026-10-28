@@ -1,0 +1,72 @@
+#include <iostream>
+#include <chrono>
+#include <thread>
+#include "Config.h"
+#include "OuchClient.h"
+#include "Logger.h"
+
+void wait_until_target_time(int target_hour, int target_min, int target_sec, int target_ms) {
+    Logger::log("INFO", "Hedef saat bekleniyor: " + std::to_string(target_hour) + ":" + 
+                std::to_string(target_min) + ":" + std::to_string(target_sec) + "." + std::to_string(target_ms));
+
+    while (true) {
+        auto now = std::chrono::system_clock::now();
+        auto now_c = std::chrono::system_clock::to_time_t(now);
+        auto local_time = *std::localtime(&now_c);
+
+        if (local_time.tm_hour == target_hour && 
+            local_time.tm_min == target_min && 
+            local_time.tm_sec == target_sec) {
+            
+            auto duration_since_epoch = now.time_since_epoch();
+            auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration_since_epoch).count() % 1000;
+            
+            if (target_ms - millis <= 50) {
+                while (true) {
+                    auto high_res_now = std::chrono::system_clock::now();
+                    auto current_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        high_res_now.time_since_epoch()
+                    ).count() % 1000;
+                    
+                    if (current_ms >= target_ms) {
+                        break; 
+                    }
+                    std::this_thread::yield(); 
+                }
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+int main() {
+    OuchConfig config;
+    if (!ConfigLoader::load("setting.json", config)) {
+        Logger::log("HATA", "setting.json okunamadi!");
+        return -1;
+    }
+
+    Logger::log("INFO", "BISTECH OUCH Client Baslatildi (High-Precision Mode)");
+
+    OuchClient client(config);
+    
+    if (client.connect_server()) {
+        client.send_logon();
+
+        wait_until_target_time(config.target_hour, config.target_min, config.target_sec, config.target_ms);
+
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
+        client.send_order("THYAO", 312.50, 10);
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+        
+        Logger::log("PERF", "Emir iletim suresi (mikrosaniye): " + std::to_string(duration_us) + " us");
+
+        client.process_incoming_data();
+    }
+
+    return 0;
+}
