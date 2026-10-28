@@ -1,0 +1,50 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#include <string>
+#include <fstream>
+#include <iostream>
+#include <nlohmann/json.hpp>
+
+struct OuchConfig {
+    std::string ip;
+    int port;
+    std::string username;
+    std::string pass;
+    std::string account_number;
+    int client_category;
+    
+    // Zaman ayarları buraya eklendi
+    int target_hour = 9;
+    int target_min = 40;
+    int target_sec = 0;
+    int target_ms = 0;
+};
+
+class ConfigLoader {
+public:
+    static bool load(const std::string& filename, OuchConfig& config) {
+        std::ifstream file(filename);
+        if (!file.is_open()) return false;
+
+        nlohmann::json j;
+        file >> j;
+
+        config.ip = j.value("ip", "127.0.0.1");
+        config.port = j.value("port", 25760);
+        config.username = j.value("username", "");
+        config.pass = j.value("pass", "");
+        config.account_number = j.value("account_number", "");
+        config.client_category = j.value("client_category", 1);
+        
+        // JSON'dan okuma kısımları
+        config.target_hour = j.value("target_hour", 9);
+        config.target_min = j.value("target_min", 40);
+        config.target_sec = j.value("target_sec", 0);
+        config.target_ms = j.value("target_ms", 0);
+
+        return true;
+    }
+};
+
+#endif
