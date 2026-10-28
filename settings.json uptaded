@@ -1,0 +1,12 @@
+{
+    "ip": "10.194.203.37",
+    "port": 25760,
+    "username": "user01",
+    "pass": "password",
+    "account_number": "123456",
+    "client_category": 1,
+    "target_hour": 9,
+    "target_min": 40,
+    "target_sec": 0,
+    "target_ms": 50
+}
